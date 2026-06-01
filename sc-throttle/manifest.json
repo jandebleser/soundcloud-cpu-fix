@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "SoundCloud rAF Throttle",
+  "version": "1.0",
+  "description": "Caps requestAnimationFrame to ~30fps on soundcloud.com to cut the CPU burned by SoundCloud's uncapped foreground render loop.",
+  "content_scripts": [
+    {
+      "matches": ["*://*.soundcloud.com/*"],
+      "js": ["throttle.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    }
+  ]
+}
