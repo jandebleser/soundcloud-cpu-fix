@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Invisible SMIL spinner repro</title>
+<style>
+  body { font: 14px system-ui; margin: 2rem; }
+  /* Exactly what soundcloud.com does: the throbber is left running, only hidden. */
+  .hidden-wrapper { visibility: hidden; opacity: 0; }
+  .tile { display: inline-block; width: 120px; height: 120px; background: #eee; margin: 4px; }
+</style>
+<h1>Invisible SMIL spinner repro</h1>
+<p>10 SVG spinners, each animated with <code>&lt;animateTransform dur="1s"&gt;</code>,
+   inside wrappers with <code>visibility: hidden; opacity: 0</code>.
+   Nothing is visible, nothing is scripted — but the page re-renders every vsync.</p>
+<p>URL flags: <code>?off</code> drops the SMIL elements (control),
+   <code>?fps</code> adds a requestAnimationFrame frame counter — leave it off to keep
+   the page completely script-free after setup. Frames/s: <b id="fps">counter off</b></p>
+<div id="tiles"></div>
+<script>
+  const N = 10, off = location.search.includes('off');
+  const NS = 'http://www.w3.org/2000/svg';
+  const tiles = document.getElementById('tiles');
+  for (let i = 0; i < N; i++) {
+    const tile = document.createElement('div');
+    tile.className = 'tile';
+    const wrap = document.createElement('div');
+    wrap.className = 'hidden-wrapper';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('width', '24'); svg.setAttribute('height', '24');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', 'M12 2 A10 10 0 0 1 22 12 L19 12 A7 7 0 0 0 12 5 Z');
+    path.setAttribute('fill', '#f50');
+    if (!off) {
+      const anim = document.createElementNS(NS, 'animateTransform');
+      anim.setAttribute('attributeName', 'transform');
+      anim.setAttribute('type', 'rotate');
+      anim.setAttribute('from', '0 12 12'); anim.setAttribute('to', '360 12 12');
+      anim.setAttribute('dur', '1s'); anim.setAttribute('repeatCount', 'indefinite');
+      path.appendChild(anim);
+    }
+    svg.appendChild(path); wrap.appendChild(svg); tile.appendChild(wrap); tiles.appendChild(tile);
+  }
+  // Optional frame counter. Off by default: with no rAF loop of our own, ANY
+  // rendering the browser still does is caused purely by the invisible SMIL.
+  if (location.search.includes('fps')) {
+    let n = 0, t0 = performance.now();
+    (function loop(t) {
+      n++;
+      if (t - t0 >= 1000) { document.getElementById('fps').textContent = n; n = 0; t0 = t; }
+      requestAnimationFrame(loop);
+    })(performance.now());
+  }
+</script>
