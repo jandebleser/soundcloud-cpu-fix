@@ -50,7 +50,7 @@ on your own machine.
 SMIL-bearing SVG timeline and steps it itself at 30 fps, but only for spinners
 that are on screen *and* actually visible, so the hidden ones stay frozen and a
 genuinely buffering spinner still spins:
-https://github.com/<user>/soundcloud-cpu-fix
+https://github.com/jandebleser/soundcloud-cpu-fix
 (MV3 extension or Tampermonkey userscript). On the idle discover page it takes
 the tab's main thread from ~34 % of a core to ~4 %.
 

@@ -32,7 +32,7 @@ mechanism to skip non-rendered SMIL already exists — it just doesn't cover
 ## Repro
 
 Attached: `repro-invisible-smil.html` (also at
-https://github.com/<user>/soundcloud-cpu-fix/blob/main/tools/repro-invisible-smil.html).
+https://github.com/jandebleser/soundcloud-cpu-fix/blob/main/tools/repro-invisible-smil.html).
 It builds 10 SVG spinners with `<animateTransform attributeName="transform"
 type="rotate" dur="1s" repeatCount="indefinite">`, each inside a wrapper, and
 runs **no other script**. URL flags choose the wrapper style.
