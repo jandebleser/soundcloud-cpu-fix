@@ -4,7 +4,11 @@
 <style>
   body { font: 14px system-ui; margin: 2rem; }
   /* Exactly what soundcloud.com does: the throbber is left running, only hidden. */
-  .hidden-wrapper { visibility: hidden; opacity: 0; }
+  .hidden-wrapper { visibility: hidden; opacity: 0; }   /* what soundcloud.com ships */
+  .dnone-wrapper  { display: none; }
+  .vishidden-wrapper { visibility: hidden; }
+  .opacity0-wrapper  { opacity: 0; }
+  .visible-wrapper { }
   .tile { display: inline-block; width: 120px; height: 120px; background: #eee; margin: 4px; }
 </style>
 <h1>Invisible SMIL spinner repro</h1>
@@ -12,18 +16,27 @@
    inside wrappers with <code>visibility: hidden; opacity: 0</code>.
    Nothing is visible, nothing is scripted — but the page re-renders every vsync.</p>
 <p>URL flags: <code>?off</code> drops the SMIL elements (control),
+   <code>?dnone</code> / <code>?vishidden</code> / <code>?opacity0</code> hide the wrappers with
+   <code>display: none</code> / <code>visibility: hidden</code> / <code>opacity: 0</code> instead,
+   <code>?visible</code> leaves them visible,
    <code>?fps</code> adds a requestAnimationFrame frame counter — leave it off to keep
    the page completely script-free after setup. Frames/s: <b id="fps">counter off</b></p>
 <div id="tiles"></div>
 <script>
-  const N = 10, off = location.search.includes('off');
+  const N = 10, q = location.search;
+  const off = q.includes('off');
+  const wrapperClass = q.includes('dnone') ? 'dnone-wrapper'
+                     : q.includes('vishidden') ? 'vishidden-wrapper'
+                     : q.includes('opacity0') ? 'opacity0-wrapper'
+                     : q.includes('visible') ? 'visible-wrapper'
+                     : 'hidden-wrapper';
   const NS = 'http://www.w3.org/2000/svg';
   const tiles = document.getElementById('tiles');
   for (let i = 0; i < N; i++) {
     const tile = document.createElement('div');
     tile.className = 'tile';
     const wrap = document.createElement('div');
-    wrap.className = 'hidden-wrapper';
+    wrap.className = wrapperClass;
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('width', '24'); svg.setAttribute('height', '24');
     svg.setAttribute('viewBox', '0 0 24 24');

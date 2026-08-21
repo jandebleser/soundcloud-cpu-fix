@@ -59,11 +59,14 @@ Confirmation: `svg.pauseAnimations()` on every SVG root, or deleting the 10
 main thread to ~0 %.
 
 `tools/repro-invisible-smil.html` reduces this to a standalone page with no
-script of its own: 10 SMIL spinners behind `visibility: hidden; opacity: 0`
-cost 237 render cycles/s and ~16 % of a core in Chrome 149 (0 % with the SMIL
-removed), and ~23 % vs ~6 % in Firefox 152. Both engines sample SMIL and run the
-full rendering lifecycle for animations that cannot be seen, so the waste is not
-Chrome-specific — though the site is what leaves them running.
+script of its own — and shows the browsers are complicit. In Chrome 149, 10 SMIL
+spinners cost **~4 % of a core when visible** (Blink throttles them to ~22 fps)
+but **~20–29 % when hidden** with `visibility: hidden` or `opacity: 0`, where
+they run at the full 240 fps refresh rate and produce zero raster work. Hiding
+the spinner makes it 5–7× more expensive than showing it. `display: none` is
+correctly skipped. Firefox 152 charges the same for hidden as for visible.
+Neither engine skips SMIL for content that cannot be seen — though the site is
+what leaves the animations running. See `tools/README.md` for the full matrix.
 
 ### Why the 2026-06 fix stopped working
 

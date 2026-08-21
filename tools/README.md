@@ -54,17 +54,43 @@ CHROME=/opt/google/chrome/chrome NODE_PATH=$(npm root -g) \
 ## repro-invisible-smil.html
 
 A minimal, standalone reduction of the bug for browser-vendor bug reports: 10
-SVG spinners driven by `<animateTransform>`, each inside a wrapper with
-`visibility: hidden; opacity: 0` — exactly what SoundCloud does. No other
-script runs on the page. `?off` drops the SMIL elements (control); `?fps` adds a
-rAF frame counter.
+SVG spinners driven by `<animateTransform dur="1s">`, each inside a wrapper that
+hides them — exactly what SoundCloud does. **No other script runs on the page.**
+URL flags pick the wrapper: default is `visibility: hidden; opacity: 0` (what
+soundcloud.com ships), plus `?vishidden`, `?opacity0`, `?dnone`, `?visible`, and
+`?off` (SMIL elements removed — the control). `?fps` adds a rAF frame counter.
 
-Measured August 2026 on a 240 Hz panel:
+Chrome 149, Linux, 240 Hz panel — renderer main-thread lifecycle events over 5 s:
 
-| | Chrome 149 (renderer main thread) | Firefox 152 (whole instance) |
-| --- | --- | --- |
-| 10 invisible SMIL spinners | 237 render cycles/s, ~16 % of a core | ~23 % of a core |
-| same page, SMIL removed | 0/s, ~0 % | ~6 % |
+| wrapper | frames/s | layout+style+composite | main thread |
+| --- | --- | --- | --- |
+| `visibility: hidden` | 236 | 1180x | ~20 % of a core |
+| `opacity: 0` | 239 | 1196x | ~29 % of a core |
+| both (what SoundCloud ships) | 240 | 1198x | ~22 % of a core |
+| **fully visible** | **22** | **110x** | **~4 % of a core** |
+| `display: none` | 2 | 0x | ~0 % |
+| no SMIL (control) | 0 | 0x | ~0 % |
 
-Both engines keep sampling SMIL and running the full rendering lifecycle for
-animations that cannot possibly be seen, so this is not a Chrome-only bug.
+The perverse part: Blink throttles the animation to ~22 fps when it is
+**visible**, but runs it at the full display refresh rate — 240 fps — when it is
+invisible, so hiding the spinner makes it **5–7× more expensive** than showing
+it. `RasterTask` count in the invisible cases is **zero**: the full
+style → layout → paint → composite lifecycle runs 240x/s and provably produces
+no pixels. `display: none` is correctly skipped, so the machinery to skip this
+already exists.
+
+Firefox 152, same page — whole-instance CPU over 6 s (not comparable in absolute
+terms to the Chrome column above, which counts main-thread lifecycle work only;
+compare within a column):
+
+| wrapper | CPU |
+| --- | --- |
+| fully visible | 48 % of a core |
+| `visibility: hidden; opacity: 0` | 47 % of a core |
+| `display: none` | 11 % of a core |
+| no SMIL (control) | 6 % of a core |
+
+Gecko charges the same for an invisible animation as for a visible one, and
+doesn't fully skip `display: none` either. So neither engine skips SMIL sampling
+for content that cannot be seen — though the site is what leaves the animations
+running.
