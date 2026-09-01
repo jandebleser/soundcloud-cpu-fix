@@ -2,11 +2,12 @@
 
 Stops the SoundCloud web player (tab or PWA) from pegging a CPU core in
 Chromium-based browsers, **even while paused**. On the current site the tab's
-main thread drops from **~34 % of a core to ~4 %** on an idle page; the renderer
+main thread drops from **~51 % of a core to ~5 %** on an idle page; the renderer
 process as a whole drops from ~90–200 % to roughly what audio playback actually
 costs.
 
-Measured on Chrome 149 / Linux, August 2026.
+Measured on Chrome 151.0.7922.173 / Linux, August 2026. Still present — the bug
+was first measured on Chrome 149 and reproduces unchanged on current stable.
 
 ---
 
@@ -26,20 +27,20 @@ tracking on (`tools/diagnose-render-loop.cjs`). Over **6 s** of the *idle,
 paused* discover page:
 
 ```
-   231 frames/s
-  layout     1384x   532ms
-  style      1383x   666ms
-  composite  1384x   615ms
-  => main thread ~31% of a core
+   191 frames/s
+  layout     1145x   826ms
+  style      1145x  1065ms
+  composite  1144x   949ms
+  => main thread ~51% of a core
   who dirties style/layout:
-     13835x LayoutInvalidationTracking reason=Style changed node=path
-     13830x StyleRecalcInvalidationTracking reason=Attribute node=path
+     17175x StyleRecalcInvalidationTracking reason=Attribute node=path
+     17175x LayoutInvalidationTracking reason=Style changed node=path
 ```
 
 Every play button on the page carries a buffering throbber: an SVG `<path>`
 driven by `<animateTransform attributeName="transform" dur="1s">`. SoundCloud
 never stops them — it just hides them, with `visibility: hidden` and
-`opacity: 0` on the wrapper (`.playableTile__playButton`). So ~10 SMIL
+`opacity: 0` on the wrapper (`.playableTile__playButton`). So ~15 SMIL
 animations run permanently while **completely invisible**, each mutating an
 attribute every frame. Attribute mutations on an SVG path invalidate style
 *and* layout, so Blink runs a full style → layout → paint → composite cycle on
@@ -47,26 +48,37 @@ attribute every frame. Attribute mutations on an SVG path invalidate style
 
 Two multipliers make this worse than it sounds:
 
-- It is tied to **display refresh rate**, not to 60 Hz. On a 240 Hz laptop panel
-  that's 230+ full render cycles per second — 4× the cost of the same page on a
-  60 Hz monitor. Moving the window to a 60 Hz display is itself a 4× win.
+- **Your fastest monitor sets the cost, even on your slow one.** The hidden
+  spinners are not paced to the display the window is on — they run at the
+  maximum refresh rate of any *attached* display. Measured at ~240 cycles/s on a
+  240 Hz laptop panel and, with the same window, ~240 cycles/s on two 60 Hz 4K
+  screens. SoundCloud costs ~51 % of a core on the 240 Hz panel and ~46 % on the
+  60 Hz one — moving the window buys nothing. A *visible* animation is paced
+  correctly (60 fps on those screens), so hiding the spinner costs ~4× the frames
+  of showing it.
+- **Lowering the fast panel's refresh rate does work**, even if you never look at
+  it. `xrandr --output eDP-1 --rate 60` takes the standalone repro from 241
+  cycles/s and ~14 % of a core to 60 cycles/s and ~4 %, on a monitor whose own
+  refresh rate never changed. Closing a high-refresh laptop lid, or dropping it
+  to 60 Hz, is a real 4× win where the throttle below isn't an option.
 - It happens with the player **paused** and the page idle. There is no JS in the
   hot path at all (`FunctionCall` is ~50 ms per 6 s), which is why a plain JS CPU
   profile shows only 59 % `(program)` and tells you nothing.
 
 Confirmation: `svg.pauseAnimations()` on every SVG root, or deleting the 10
-`<animateTransform>` elements, takes the page from 226 fps to **0 fps** and the
+`<animateTransform>` elements, takes the page from 191 fps to **0 fps** and the
 main thread to ~0 %.
 
 `tools/repro-invisible-smil.html` reduces this to a standalone page with no
-script of its own — and shows the browsers are complicit. In Chrome 149, 10 SMIL
-spinners cost **~4 % of a core when visible** (Blink throttles them to ~22 fps)
-but **~20–29 % when hidden** with `visibility: hidden` or `opacity: 0`, where
-they run at the full 240 fps refresh rate and produce zero raster work. Hiding
-the spinner makes it 5–7× more expensive than showing it. `display: none` is
-correctly skipped. Firefox 152 charges the same for hidden as for visible.
-Neither engine skips SMIL for content that cannot be seen — though the site is
-what leaves the animations running. See `tools/README.md` for the full matrix.
+script of its own — and shows the browsers are complicit. In Chrome 151, 10 SMIL
+spinners hidden with `visibility: hidden` / `opacity: 0` run a full
+style → layout → paint → composite cycle **240×/s** — once per vsync — with a
+`RasterTask` count of **zero**, costing ~16–20 % of a core to produce no pixels
+at all. `display: none` is correctly skipped (0 cycles), so the machinery exists;
+it just doesn't cover `visibility: hidden` or `opacity: 0`. Firefox 152 has the
+same omission. Neither engine skips SMIL for content that cannot be seen —
+though the site is what leaves the animations running. See `tools/README.md` for
+the full matrix and `tools/measure-repro.cjs` to reproduce it.
 
 ### Why the 2026-06 fix stopped working
 
@@ -138,13 +150,13 @@ CPU, choppier visible spinners and scrubber. Reload the extension afterwards.
 
 ## Results
 
-Idle, paused discover page, 240 Hz panel, 6 s trace:
+Idle, paused discover page, 240 Hz panel, 6 s trace, Chrome 151:
 
 | | before | after |
 | --- | --- | --- |
-| render cycles | 230/s | 0/s (all spinners hidden → frozen) |
-| layout + style + composite | 1382x, 1.9 s | 0 |
-| main thread | ~34 % of a core | **~4 %** |
+| render cycles | 191/s | 0/s (all spinners hidden → frozen) |
+| layout + style + composite | 1145x, 2.8 s | 0 |
+| main thread | ~51 % of a core | **~5 %** |
 
 A spinner that is genuinely visible keeps animating — its SMIL timeline still
 advances 1.00 s per second, just sampled 30×/s instead of 230×/s.

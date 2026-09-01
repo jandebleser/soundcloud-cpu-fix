@@ -19,17 +19,32 @@
    <code>?dnone</code> / <code>?vishidden</code> / <code>?opacity0</code> hide the wrappers with
    <code>display: none</code> / <code>visibility: hidden</code> / <code>opacity: 0</code> instead,
    <code>?visible</code> leaves them visible,
+   <code>?n=200</code> scales the spinner count (default 10, the number soundcloud.com ships),
    <code>?fps</code> adds a requestAnimationFrame frame counter — leave it off to keep
    the page completely script-free after setup. Frames/s: <b id="fps">counter off</b></p>
+<p>Now showing <b id="n"></b> spinners in <b id="mode"></b> wrappers.
+   Compare against <span id="links"></span></p>
 <div id="tiles"></div>
 <script>
-  const N = 10, q = location.search;
+  const q = location.search;
+  // ?n=<count> scales the spinner count. The default 10 is what soundcloud.com
+  // ships, but the cost is per-animation *and* per-vsync, so on a 60 Hz display
+  // 10 spinners is only a quarter of what a 240 Hz panel pays. Use ?n=200 to put
+  // the effect well clear of measurement noise on any machine.
+  const N = Math.min(2000, Math.max(1, Number((q.match(/[?&]n=(\d+)/) || [])[1]) || 10));
   const off = q.includes('off');
   const wrapperClass = q.includes('dnone') ? 'dnone-wrapper'
                      : q.includes('vishidden') ? 'vishidden-wrapper'
                      : q.includes('opacity0') ? 'opacity0-wrapper'
                      : q.includes('visible') ? 'visible-wrapper'
                      : 'hidden-wrapper';
+  // Variant links, carrying the current ?n= across so a comparison stays like-for-like.
+  document.getElementById('links').innerHTML =
+    ['off', 'dnone', 'visible', 'vishidden', 'opacity0', '']
+      .map((f) => `<a href="?n=${N}${f ? '&' + f : ''}">${f ? '?' + f : 'default'}</a>`)
+      .join(' &middot; ');
+  document.getElementById('n').textContent = off ? N + ' (no SMIL)' : N;
+  document.getElementById('mode').textContent = off ? 'default' : wrapperClass.replace('-wrapper', '');
   const NS = 'http://www.w3.org/2000/svg';
   const tiles = document.getElementById('tiles');
   for (let i = 0; i < N; i++) {

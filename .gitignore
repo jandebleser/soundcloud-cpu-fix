@@ -1,3 +1,11 @@
 node_modules/
 *.log
 .DS_Store
+
+# IDE
+.idea/
+
+# Bug-tracker attachments: machine dumps, uploaded directly to the issue
+reports/*.html
+reports/about-version.txt
+reports/gpu-internals.txt

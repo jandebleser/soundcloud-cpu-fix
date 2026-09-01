@@ -1,21 +1,20 @@
 #!/usr/bin/env node
 //
-// diagnose-render-loop.cjs — find out what makes SoundCloud re-render every frame,
-// and measure the shipped throttle against it.
+// measure-repro.cjs — run tools/repro-invisible-smil.html through every wrapper
+// variant and print the renderer main-thread cost of each, as a table.
+//
+// This replaces eyeballing the DevTools FPS meter, which is the wrong instrument
+// for this bug: the meter is a compositor overlay that itself keeps frames being
+// produced, and it says nothing about main-thread style/layout work. What matters
+// here is how many style -> layout -> paint -> composite cycles the renderer runs
+// and how much raster (i.e. actual pixels) they produce.
 //
 // Launches an isolated debug Chrome (throwaway --user-data-dir, own debug port —
-// your real profile is untouched), opens SoundCloud, and over the DevTools
-// Protocol:
-//
-//   1. traces 6s with invalidation tracking on, so every style/layout
-//      invalidation is attributed to a reason and a node;
-//   2. inventories the SMIL animation elements in the page;
-//   3. A/Bs the page against ../sc-throttle/throttle.js injected at document
-//      start, reporting frames/s and main-thread cost for each.
+// your real profile is untouched) and drives it over the DevTools Protocol.
 //
 // Usage:
 //   CHROME=/opt/google/chrome/chrome NODE_PATH=$(npm root -g) \
-//     node tools/diagnose-render-loop.cjs [url]
+//     node tools/measure-repro.cjs [seconds]
 //
 // Requires the `ws` node module on NODE_PATH.
 const { spawn } = require('child_process');
@@ -28,18 +27,38 @@ const CHROME = process.env.CHROME || 'google-chrome';
 // earlier debug Chrome is still alive it keeps the port, and this script then
 // silently drives THAT browser — wrong build, wrong tab, wrong numbers.
 let PORT = 0;
+const SECS = Number(process.argv[2] || process.env.SECS || 5);
 // WINDOW_POSITION=x,y and WINDOW_SIZE=w,h place the browser window on a chosen
 // monitor. The bug's cost is per-vsync, so which screen the window sits on
 // changes the answer: a 240 Hz panel charges 4x what a 60 Hz one does.
+//
+// Both are in DIP, NOT pixels — Chrome multiplies them by the device scale
+// factor — and the window manager will shove the window back on screen if the
+// result overflows the desktop. Get either wrong and the window silently
+// straddles two monitors, which is why the run reports where it actually
+// landed instead of trusting the flag.
 const WINDOW_POSITION = process.env.WINDOW_POSITION || '';
 const WINDOW_SIZE = process.env.WINDOW_SIZE || '';
 const windowArgs = [
   ...(WINDOW_POSITION ? [`--window-position=${WINDOW_POSITION}`] : []),
   ...(WINDOW_SIZE ? [`--window-size=${WINDOW_SIZE}`] : []),
 ];
-const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'sc-diagnose-'));
-const URL_TARGET = process.argv[2] || process.env.SC_URL || 'https://soundcloud.com/discover';
-const THROTTLE = fs.readFileSync(path.join(__dirname, '..', 'sc-throttle', 'throttle.js'), 'utf8');
+const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'sc-measure-'));
+const REPRO = 'file://' + path.join(__dirname, 'repro-invisible-smil.html');
+// SPINNERS=200 scales the repro up. Worth doing on a 60 Hz display, where the
+// default 10 spinners cost a quarter of what they cost on a 240 Hz panel.
+const N = Number(process.env.SPINNERS || 0);
+const url = (flag) => REPRO + flag + (N ? (flag ? '&' : '?') + 'n=' + N : '');
+
+// label -> URL flag. Order matters: control last so the table reads top-down.
+const VARIANTS = [
+  ['visibility:hidden; opacity:0  (what soundcloud.com ships)', ''],
+  ['visibility: hidden',                                        '?vishidden'],
+  ['opacity: 0',                                                '?opacity0'],
+  ['fully visible',                                             '?visible'],
+  ['display: none',                                             '?dnone'],
+  ['no SMIL at all (control)',                                  '?off'],
+];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const get = (p) => new Promise((res, rej) =>
@@ -97,15 +116,25 @@ function rendererMainTid(events) {
 const evaluate = (c, expression) => c.send('Runtime.evaluate',
   { returnByValue: true, awaitPromise: true, expression }).then((r) => r.result && r.result.value);
 
-async function trace(c, label, { invalidations = false, secs = 6 } = {}) {
+// INVALIDATIONS=1 also tallies what dirtied style/layout, attributed to a reason
+// and a node. Costs trace volume, so it's off by default.
+const INVALIDATIONS = !!process.env.INVALIDATIONS;
+
+async function measure(c, secs) {
   const categories = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink'];
-  if (invalidations) categories.push('disabled-by-default-devtools.timeline.invalidationTracking');
-  await c.send('Tracing.start', { traceConfig: { recordMode: 'recordAsMuchAsPossible', includedCategories: categories } });
+  if (INVALIDATIONS) categories.push('disabled-by-default-devtools.timeline.invalidationTracking');
+  await c.send('Tracing.start', { traceConfig: {
+    recordMode: 'recordAsMuchAsPossible',
+    includedCategories: categories,
+  } });
   await sleep(secs * 1000);
   const done = new Promise((r) => c.onTraceComplete(r));
   await c.send('Tracing.end'); await done;
   const events = c.take();
 
+  // Pick the renderer main thread BY NAME. Taking "the busiest thread" instead is
+  // a trap: when the animation is visible, raster threads outwork the main thread,
+  // the heuristic selects one of those, and every main-thread metric comes back 0.
   const tid = rendererMainTid(events);
   const of = (name) => events.filter((e) => e.tid === tid && e.name === name);
   const ms = (list) => list.reduce((s, e) => s + (e.dur || 0), 0) / 1000;
@@ -114,31 +143,21 @@ async function trace(c, label, { invalidations = false, secs = 6 } = {}) {
   const layout = of('LocalFrameView::performLayout');
   const style = of('Document::recalcStyle');
   const composite = of('PaintArtifactCompositor::Update');
-  const js = ms(of('FunctionCall')) + ms(of('TimerFire'));
-  const busy = ms(layout) + ms(style) + ms(composite) + js;
-
-  console.log(`\n--- ${label} (${secs}s) ---`);
-  console.log(`  ${(frames.length / secs).toFixed(0).padStart(4)} frames/s`);
-  console.log(`  layout    ${String(layout.length).padStart(5)}x ${ms(layout).toFixed(0).padStart(5)}ms`);
-  console.log(`  style     ${String(style.length).padStart(5)}x ${ms(style).toFixed(0).padStart(5)}ms`);
-  console.log(`  composite ${String(composite.length).padStart(5)}x ${ms(composite).toFixed(0).padStart(5)}ms`);
-  console.log(`  js                 ${js.toFixed(0).padStart(5)}ms`);
-  console.log(`  => main thread ~${(busy / (secs * 10)).toFixed(0)}% of a core`);
-
-  if (invalidations) {
-    const tally = new Map();
-    for (const e of events) {
-      if (!/InvalidationTracking/.test(e.name)) continue;
-      const d = (e.args && e.args.data) || {};
-      const key = `${e.name} reason=${d.reason || '?'} node=${d.nodeName || d.nodeId || '?'}`;
-      tally.set(key, (tally.get(key) || 0) + 1);
-    }
-    console.log('  who dirties style/layout:');
-    const rows = [...tally.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
-    if (!rows.length) console.log('    (nothing — the page is idle)');
-    for (const [k, v] of rows) console.log(`    ${String(v).padStart(6)}x ${k}`);
+  // RasterTask runs off the main thread — count it across every thread.
+  const raster = events.filter((e) => e.name === 'RasterTask');
+  const busy = ms(layout) + ms(style) + ms(composite) + ms(of('FunctionCall')) + ms(of('TimerFire'));
+  const tally = new Map();
+  if (INVALIDATIONS) for (const e of events) {
+    if (!/InvalidationTracking/.test(e.name)) continue;
+    const d = (e.args && e.args.data) || {};
+    const key = `${e.name} reason=${d.reason || '?'} node=${d.nodeName || d.nodeId || '?'}`;
+    tally.set(key, (tally.get(key) || 0) + 1);
   }
-  return busy / (secs * 10);
+  return {
+    frames: frames.length, style: style.length, layout: layout.length, composite: composite.length,
+    raster: raster.length, cpu: busy / (secs * 10),
+    invalidations: [...tally.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5),
+  };
 }
 
 // Chrome writes the port it actually bound to as the first line of this file.
@@ -168,58 +187,60 @@ for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { shutdown(); pro
 (async () => {
   const child = spawn(CHROME, [
     `--user-data-dir=${PROFILE}`, '--remote-debugging-port=0', ...windowArgs,
-    '--autoplay-policy=no-user-gesture-required', '--no-first-run', '--no-default-browser-check',
-    URL_TARGET,
+    '--no-first-run', '--no-default-browser-check', url(''),
   ], { stdio: 'ignore', detached: true });   // detached: own process group, so shutdown() can kill the tree
   CHILD = child;
   child.unref();
 
   PORT = await readDevToolsPort();
-  for (let i = 0; i < 30; i++) { try { await get('/json/version'); break; } catch { await sleep(500); } }
-  console.log('Chrome:', (await get('/json/version')).Browser);
-  console.log('URL:   ', URL_TARGET);
+  for (let i = 0; i < 40; i++) { try { await get('/json/version'); break; } catch { await sleep(500); } }
+  console.log('Chrome:  ', (await get('/json/version')).Browser);
+  console.log('Repro:   ', url(''));
+  console.log('Trace:   ', SECS, 's per variant, renderer main thread\n');
 
   let target;
-  for (let i = 0; i < 30 && !target; i++) {
-    target = (await get('/json')).find((t) => t.type === 'page' && t.url.includes('soundcloud'));
+  for (let i = 0; i < 40 && !target; i++) {
+    target = (await get('/json')).find((t) => t.type === 'page' && t.url.includes('repro-invisible-smil'));
     if (!target) await sleep(500);
   }
-  if (!target) throw new Error('no soundcloud page target');
+  if (!target) throw new Error('no repro page target');
   const c = connect(target.webSocketDebuggerUrl);
   await c.ready;
   await c.send('Page.enable'); await c.send('Runtime.enable');
-  await sleep(9000); // let the SPA settle
 
-  console.log('\n=== SMIL inventory ===');
-  console.log(await evaluate(c, `(() => {
-    const smil = [...document.querySelectorAll('animate,animateTransform,animateMotion,animateColor,set')];
-    const tally = {};
-    for (const a of smil) {
-      const k = a.tagName + ' attributeName=' + (a.getAttribute('attributeName') || '?')
-              + ' dur=' + (a.getAttribute('dur') || '?')
-              + ' on=' + (a.parentElement ? a.parentElement.tagName : '?');
-      tally[k] = (tally[k] || 0) + 1;
-    }
-    return { svgs: document.querySelectorAll('svg').length,
-             smil: smil.length,
-             kinds: Object.entries(tally).sort((a, b) => b[1] - a[1]).map(([k, v]) => v + 'x ' + k) };
-  })()`));
+  const where = await evaluate(c, `({
+    dpr: devicePixelRatio,
+    x: window.screenX, y: window.screenY,
+    outer: window.outerWidth + 'x' + window.outerHeight,
+    screen: screen.width + 'x' + screen.height,
+  })`);
+  console.log(`Window:   ${where.outer} DIP at (${where.x},${where.y}), dpr ${where.dpr}`);
+  console.log(`Screen:   ${where.screen} DIP` +
+              ` = ${where.screen.split('x').map((n) => n * where.dpr).join('x')} px\n`);
 
-  const before = await trace(c, 'BASELINE', { invalidations: true });
+  const rows = [];
+  for (const [label, flag] of VARIANTS) {
+    await c.send('Page.navigate', { url: url(flag) });
+    await sleep(1500); // let the page build its spinners and settle
+    const r = await measure(c, SECS);
+    rows.push([label, r]);
+    console.log(`  measured: ${label}`);
+    for (const [k, v] of r.invalidations) console.log(`      ${String(v).padStart(6)}x ${k}`);
+  }
 
-  await c.send('Page.addScriptToEvaluateOnNewDocument', { source: THROTTLE });
-  await c.send('Page.reload', {});
-  await sleep(11000);
-  console.log('\nthrottle injected:', await evaluate(c, `document.documentElement.getAttribute('data-sc-throttle')`));
-  const after = await trace(c, 'WITH sc-throttle', { invalidations: true });
+  const w = Math.max(...VARIANTS.map(([l]) => l.length));
+  console.log(`\n| ${'wrapper'.padEnd(w)} | frames/s | style/s | layout/s | composite/s | raster/s | main thread |`);
+  console.log(`| ${'-'.repeat(w)} | -------- | ------- | -------- | ----------- | -------- | ----------- |`);
+  for (const [label, r] of rows) {
+    const per = (n) => String(Math.round(n / SECS)).padStart(7);
+    console.log(`| ${label.padEnd(w)} | ${per(r.frames).padStart(8)} | ${per(r.style)} | ${per(r.layout).padStart(8)} | ${per(r.composite).padStart(11)} | ${per(r.raster).padStart(8)} | ${(r.cpu.toFixed(0) + '% of a core').padStart(11)} |`);
+  }
+  console.log(`
+Read it like this: the hidden variants run a full style -> layout -> composite
+cycle at the display refresh rate while producing ZERO raster work — no pixel
+they touch can ever be seen. 'display: none' and the no-SMIL control show what
+correct handling looks like: no cycles at all.`);
 
-  const t0 = await evaluate(c, `(() => { const s = [...document.querySelectorAll('svg')].find(x => x.querySelector('animateTransform')); return s ? s.getCurrentTime() : null; })()`);
-  await sleep(1000);
-  const t1 = await evaluate(c, `(() => { const s = [...document.querySelectorAll('svg')].find(x => x.querySelector('animateTransform')); return s ? s.getCurrentTime() : null; })()`);
-  console.log(`\nSMIL timeline still advancing (should be ~1.0s per second): ${
-    t0 === null || t1 === null ? 'n/a — no SMIL svg on screen' : (t1 - t0).toFixed(2) + 's'}`);
-
-  console.log(`\nRESULT: main thread ${before.toFixed(0)}% -> ${after.toFixed(0)}% of a core`);
   c.close();
   console.log(`\n(debug Chrome shut down; throwaway profile left at ${PROFILE})`);
   process.exit(0);

@@ -6,7 +6,8 @@ April 2026, no diagnosis yet)
 
 ---
 
-Diagnosed this on Chrome 149 / Linux. It isn't a Brave or Chromium regression,
+Diagnosed this on Chrome 151.0.7922.173 / Linux (first measured on 149; it
+reproduces unchanged on current stable). It isn't a Brave or Chromium regression,
 and it isn't the audio — it happens with the player **paused** and no audio
 stream at all.
 
@@ -22,27 +23,34 @@ A DevTools trace with invalidation tracking, on the idle, paused discover page
 (6 s):
 
 ```
-   231 frames/s
-  layout     1384x   532ms
-  style      1383x   666ms
-  composite  1384x   615ms
-  => main thread ~31% of a core
+   191 frames/s
+  layout     1145x   826ms
+  style      1145x  1065ms
+  composite  1144x   949ms
+  => main thread ~51% of a core
 
-  13835x LayoutInvalidationTracking      reason=Style changed  node=path
-  13830x StyleRecalcInvalidationTracking reason=Attribute      node=path
+  17175x StyleRecalcInvalidationTracking reason=Attribute      node=path
+  17175x LayoutInvalidationTracking      reason=Style changed  node=path
 ```
 
 Two things make it worse than it sounds:
 
-- **It scales with your monitor's refresh rate.** On a 240 Hz panel that's 230+
-  full render cycles per second — 4× the cost of the same page on a 60 Hz
-  monitor. Moving the window to a 60 Hz display is an immediate 4× win.
+- **Your fastest attached monitor sets the cost, on every monitor.** Same window
+  on a 240 Hz laptop panel and on two 60 Hz 4K screens: ~240 render cycles per
+  second on all three, with SoundCloud at ~51 % of a core on the fast panel
+  against ~46 % on a 60 Hz one. Moving the window buys nothing, because the
+  hidden animations follow the fastest *attached* display rather than the one
+  showing them. A visible animation is paced correctly (60 fps there), so hiding
+  the spinner costs ~4× the frames of showing it. Dropping the fast panel to
+  60 Hz — `xrandr --output eDP-1 --rate 60`, even with the lid shut — is a
+  genuine 4× win: in a standalone repro it took the hidden animation from
+  241 cycles/s to 60.
 - **There is no JS in the hot path.** `FunctionCall` is ~50 ms per 6 s, which is
   why a JS CPU profile shows ~59 % `(program)` and tells you nothing. You need a
   timeline trace with invalidation tracking to see it.
 
 Confirmation: running `document.querySelectorAll('svg').forEach(s =>
-s.pauseAnimations())` in the console takes the page from 226 fps to **0 fps** and
+s.pauseAnimations())` in the console takes the page from 191 fps to **0 fps** and
 the main thread to ~0 %. That's a one-liner you can paste right now to check it
 on your own machine.
 
@@ -52,15 +60,14 @@ that are on screen *and* actually visible, so the hidden ones stay frozen and a
 genuinely buffering spinner still spins:
 https://github.com/jandebleser/soundcloud-cpu-fix
 (MV3 extension or Tampermonkey userscript). On the idle discover page it takes
-the tab's main thread from ~34 % of a core to ~4 %.
+the tab's main thread from ~51 % of a core to ~5 %.
 
 **Upstream.** The site bug is SoundCloud's — they should stop the animations
 instead of hiding them; I've reported it. But the engines are complicit, and
-that part is fixable in Chromium: in a standalone repro, Blink throttles a
-*visible* SMIL spinner to ~22 fps (~4 % of a core) while running the same
-spinner at the full 240 fps refresh when it's hidden (~20–29 %). Hiding it makes
-it 5–7× *more* expensive than showing it, and `RasterTask` count is zero — the
-whole lifecycle runs to produce no pixels. `display: none` is correctly skipped,
-so the machinery exists. Filed against `Blink>SVG` with the repro; Firefox 152
-has a related problem (it charges the same for hidden as for visible) and I've
-filed that too.
+that part is fixable in Chromium: in a standalone repro, 10 SMIL spinners hidden
+with `visibility: hidden` / `opacity: 0` run the full style → layout → paint →
+composite lifecycle once per vsync — 240×/s here — with a `RasterTask` count of
+**zero**. ~16–20 % of a core to produce no pixels. `display: none` is correctly
+skipped, so the machinery exists; it just doesn't cover `visibility: hidden` or
+`opacity: 0`. Filed against `Blink>SVG` with the repro; Firefox 152 has the same
+omission and I've filed that too.

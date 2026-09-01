@@ -23,12 +23,12 @@ Expected shape:
 { svgs: 75, smil: 10, kinds: [ '10x animateTransform attributeName=transform dur=1s on=path' ] }
 
 --- BASELINE (6s) ---
-   231 frames/s
-  layout     1384x   532ms
+   191 frames/s
+  layout     1145x   826ms
   ...
-  => main thread ~31% of a core
+  => main thread ~51% of a core
   who dirties style/layout:
-     13835x LayoutInvalidationTracking reason=Style changed node=path
+     17175x LayoutInvalidationTracking reason=Style changed node=path
 
 --- WITH sc-throttle (6s) ---
      0 frames/s
@@ -38,6 +38,31 @@ Expected shape:
 A high, near-constant `frames/s` matching your monitor's refresh rate, with full
 `layout` / `style` / `composite` counts every frame, is the runaway
 render-loop signature. The `who dirties style/layout` block names the culprit.
+
+## measure-repro.cjs
+
+Runs `repro-invisible-smil.html` through every wrapper variant in one isolated
+Chrome and prints the cost of each as a table — the thing to hand a browser
+vendor instead of asking them to eyeball an FPS meter.
+
+```sh
+CHROME=/opt/google/chrome/chrome NODE_PATH=$(npm root -g) \
+  node tools/measure-repro.cjs [seconds]      # SPINNERS=200 to scale the page up
+```
+
+`WINDOW_POSITION=x,y` and `WINDOW_SIZE=w,h` (both in **DIP**, not pixels — Chrome
+multiplies by the device scale factor) put the window on a chosen monitor. Every
+run prints the screen it actually landed on, because the window manager will
+shove an overflowing window back on-screen and silently straddle two displays.
+Which monitor it lands on matters: a hidden SMIL animation is paced by the
+fastest *attached* display, not the one presenting it, so the same window costs
+~240 cycles/s on a 60 Hz monitor while a 240 Hz panel is plugged in — and 60
+cycles/s once that panel is dropped to 60 Hz.
+
+The FPS meter is the wrong instrument for this bug twice over: it counts
+compositor frames rather than main-thread lifecycle work, and both the hidden and
+the visible variants produce frames at the refresh rate. What separates them is
+the `raster/s` column.
 
 ## profile-soundcloud.cjs
 
@@ -60,24 +85,38 @@ URL flags pick the wrapper: default is `visibility: hidden; opacity: 0` (what
 soundcloud.com ships), plus `?vishidden`, `?opacity0`, `?dnone`, `?visible`, and
 `?off` (SMIL elements removed — the control). `?fps` adds a rAF frame counter.
 
-Chrome 149, Linux, 240 Hz panel — renderer main-thread lifecycle events over 5 s:
+`?n=<count>` scales the spinner count (default 10, what SoundCloud ships) — use
+`?n=200` on a 60 Hz display, where 10 spinners cost a quarter of what they cost
+on a 240 Hz panel and disappear into the noise.
 
-| wrapper | frames/s | layout+style+composite | main thread |
-| --- | --- | --- | --- |
-| `visibility: hidden` | 236 | 1180x | ~20 % of a core |
-| `opacity: 0` | 239 | 1196x | ~29 % of a core |
-| both (what SoundCloud ships) | 240 | 1198x | ~22 % of a core |
-| **fully visible** | **22** | **110x** | **~4 % of a core** |
-| `display: none` | 2 | 0x | ~0 % |
-| no SMIL (control) | 0 | 0x | ~0 % |
+Chrome 151.0.7922.173, Linux, 240 Hz panel — renderer main-thread events per
+second over 6 s, via `measure-repro.cjs`:
 
-The perverse part: Blink throttles the animation to ~22 fps when it is
-**visible**, but runs it at the full display refresh rate — 240 fps — when it is
-invisible, so hiding the spinner makes it **5–7× more expensive** than showing
-it. `RasterTask` count in the invisible cases is **zero**: the full
+| wrapper | frames/s | style=layout=composite /s | **raster/s** | main thread |
+| --- | --- | --- | --- | --- |
+| `visibility: hidden` | 240 | 240 | **0** | ~16 % of a core |
+| `opacity: 0` | 241 | 241 | **0** | ~18 % of a core |
+| both (what SoundCloud ships) | 240 | 240 | **0** | ~20 % of a core |
+| fully visible | 234 | 234 | 369 | ~30 % of a core |
+| `display: none` | 1 | 0 | 0 | ~0 % |
+| no SMIL (control) | 0 | 0 | 0 | ~0 % |
+
+The point is the **raster** column, not a comparison against the visible row.
+Hidden and visible run the same number of lifecycle updates — roughly one per
+vsync — but in the hidden cases `RasterTask` count is **zero**: the full
 style → layout → paint → composite lifecycle runs 240x/s and provably produces
-no pixels. `display: none` is correctly skipped, so the machinery to skip this
+no pixels, for ~16–20 % of a core. Hiding the spinner saves only the raster third of
+the cost. `display: none` is correctly skipped, so the machinery to skip this
 already exists.
+
+At `?n=200` the page stops being vsync-bound, so the result no longer depends on
+refresh rate: ~65–68 % of a core with **zero** raster work in every hidden
+variant, against 0 % for `?dnone` and `?off`.
+
+An earlier version of this table claimed Blink throttled the *visible* animation
+to ~22 fps, making hidden 5–7× more expensive than visible. That does not
+reproduce under a controlled same-session A/B and has been withdrawn — see
+`../reports/chromium-bug-reply.md`.
 
 Firefox 152, same page — whole-instance CPU over 6 s (not comparable in absolute
 terms to the Chrome column above, which counts main-thread lifecycle work only;

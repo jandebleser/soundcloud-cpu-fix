@@ -48,10 +48,9 @@ plus `?visible`, `?vishidden`, `?opacity0`, `?dnone`, `?off` (SMIL removed).
 So ~41 points of a core are spent on animations that cannot be seen — the same
 as spending them on animations that can.
 
-For contrast, Chrome 149 on the same page throttles the *visible* animation to
-~22 fps (~4 % of a core, main thread) but runs the *hidden* one at the full
-240 fps refresh (~20–29 %). Different bug shape, same underlying omission: neither
-engine skips SMIL for content that cannot be seen.
+Chrome 151 on the same page has the same omission: the hidden animation runs a
+full style → layout → paint → composite cycle every vsync with a `RasterTask`
+count of zero. Neither engine skips SMIL for content that cannot be seen.
 
 ## Expected
 
