@@ -2,12 +2,14 @@
 
 **Post at:** the Chromium issue, in reply to dg...@google.com's reproduction attempt.
 
-**Attachments — ready in this directory:**
+**Attachments — all ready in this directory:**
 - `about-version.txt` — `chrome://version/?show-variations-cmd`, real profile,
   confirmed 151.0.7922.173 with the `--force-fieldtrials=` block present
 - `gpu-internals.txt` — the full `chrome://gpu` dump
-- still to capture: a screenshot of Task Manager (Shift+Esc) next to `?n=200`
-  and `?n=200&off`
+- `screenshots/taskmgr-n200-hidden.png` — `?n=200`, Task Manager row at 122 % CPU
+- `screenshots/taskmgr-n200-off.png` — `?n=200&off`, same tab, same PID, 0.0 % CPU
+- `screenshots/taskmgr-n200-dnone.png` — `?n=200&dnone`, 200 live SMIL
+  animations under `display: none`, 0.5 % CPU
 
 ---
 
@@ -145,6 +147,28 @@ Chrome's Task Manager (Shift+Esc):
 
 - `repro-invisible-smil.html?n=200` — 200 spinners, all invisible
 - `repro-invisible-smil.html?n=200&off` — the same page, SMIL elements removed
+- `repro-invisible-smil.html?n=200&dnone` — the same 200 animations, but under
+  `display: none`
+
+The page names its own state in the document title, so the Task Manager row
+identifies which variant it is measuring. Attached, all three from the same
+renderer process (PID 864043), window on a 60 Hz monitor:
+
+| Task Manager row | CPU | memory footprint |
+| --- | --- | --- |
+| `Tab: SMIL repro: 200 x hidden` | **122.0** | 1,743,684K |
+| `Tab: SMIL repro: 200 x dnone` | 0.5 | 37,172K |
+| `Tab: SMIL repro: 200 x no SMIL` | 0.0 | 32,532K |
+
+The `dnone` row is the one I would point at: the same 200 SMIL animations, still
+in the DOM, still running, cost 0.5 % of a core when the subtree is
+`display: none` and 122 % when it is `visibility: hidden; opacity: 0`. Nothing
+is on screen in either case.
+
+(The memory column moves with it — but it plateaus around 1.8 GB within ten
+seconds and stays flat over two minutes, so it reads as a fixed per-element cost
+of keeping 200 animated subtrees laid out, not a leak. Noting it only because it
+is visible in the screenshots; the CPU column is the report.)
 
 Same machine, Chrome 151, 6 s trace, 200 spinners:
 
@@ -190,7 +214,8 @@ salomvary/soundcleod#118.
 Chrome 151.0.7922.173 (current stable — I updated from 149.0.7827.53, the build
 you tested on, and the behaviour is identical). Linux, X11, Ubuntu 24.04.
 `chrome://version/?show-variations-cmd` and the full `chrome://gpu` dump are
-attached, plus a Task Manager screenshot of `?n=200` vs `?n=200&off`.
+attached, plus Task Manager screenshots of `?n=200`, `?n=200&off` and
+`?n=200&dnone`.
 
 The attached GPU report shows the mixed-refresh setup the pacing tables above
 depend on — three displays, all at `scale=2`:
