@@ -12,7 +12,7 @@
   .tile { display: inline-block; width: 120px; height: 120px; background: #eee; margin: 4px; }
 </style>
 <h1>Invisible SMIL spinner repro</h1>
-<p>10 SVG spinners, each animated with <code>&lt;animateTransform dur="1s"&gt;</code>,
+<p>SVG spinners, each animated with <code>&lt;animateTransform dur="1s"&gt;</code>,
    inside wrappers with <code>visibility: hidden; opacity: 0</code>.
    Nothing is visible, nothing is scripted — but the page re-renders every vsync.</p>
 <p>URL flags: <code>?off</code> drops the SMIL elements (control),
@@ -45,6 +45,9 @@
       .join(' &middot; ');
   document.getElementById('n').textContent = off ? N + ' (no SMIL)' : N;
   document.getElementById('mode').textContent = off ? 'default' : wrapperClass.replace('-wrapper', '');
+  // Name the variant in the document title, so Chrome's Task Manager row
+  // ("Tab: ...") identifies which state it is measuring without a second window.
+  document.title = `SMIL repro: ${N} x ${off ? 'no SMIL' : wrapperClass.replace('-wrapper', '')}`;
   const NS = 'http://www.w3.org/2000/svg';
   const tiles = document.getElementById('tiles');
   for (let i = 0; i < N; i++) {
